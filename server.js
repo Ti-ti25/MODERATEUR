@@ -35,7 +35,7 @@ const client = new Client({
 const commands = [
     {
         name: 'warn',
-        description: 'Mettre un avertissement à un membre et l\'ajouter au site',
+        description: 'Mettre un avertissement à un membre, l\'avertir en MP et l\'ajouter au site',
         options: [
             { name: 'membre', description: 'Le membre à avertir', type: ApplicationCommandOptionType.User, required: true },
             { name: 'motif', description: 'La raison de l\'avertissement', type: ApplicationCommandOptionType.String, required: true }
@@ -64,13 +64,8 @@ client.once('ready', async () => {
     console.log(`🤖 Bot Discord connecté en tant que : ${client.user.tag} !`);
     try {
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        
-        // Supprime les vieux résidus de commandes globales obsolètes
         await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
-        
-        // Enregistre proprement la nouvelle liste
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        
         console.log('✅ Toutes les commandes Slash individuelles sont synchronisées !');
     } catch (error) {
         console.error('❌ Erreur lors de l\'enregistrement des commandes:', error);
@@ -92,12 +87,30 @@ client.on('interactionCreate', async (interaction) => {
     const username = targetMember.user.username;
     const user_id = targetMember.id;
 
-    // --- COMMANDE /WARN ---
+    // --- COMMANDE /WARN (AVEC ENVOI MP) ---
     if (commandName === 'warn') {
         await interaction.deferReply();
+        
+        let mpEnvoye = true;
+
+        // 1. Envoi du message privé à l'utilisateur concerné
+        try {
+            await targetMember.send(`⚠️ **Avertissement reçu**\n\nTu as reçu un avertissement sur le serveur.\n**Raison :** ${reason}\n**Modérateur :** ${moderator}\n\n*Cet avertissement a été consigné dans ton casier judiciaire sur notre site web.*`);
+        } catch (mpErr) {
+            // Si l'utilisateur a bloqué ses MP, le bot ne plante pas mais le signale
+            console.log(`⚠️ Impossible d'envoyer un MP à ${username} (MP bloqués).`);
+            mpEnvoye = false;
+        }
+
+        // 2. Ajout dans la base de données pour le site web
         try {
             await pool.query('INSERT INTO warns (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)', [username, user_id, reason, moderator]);
-            return interaction.editReply(`⚠️ **${username}** a reçu un avertissement et cela apparaît sur le site web !`);
+            
+            if (mpEnvoye) {
+                return interaction.editReply(`⚠️ **${username}** a reçu un avertissement, a été notifié en MP, et cela apparaît sur le site web !`);
+            } else {
+                return interaction.editReply(`⚠️ **${username}** a reçu un avertissement et apparaît sur le site web ! *(Note : Impossible de lui envoyer un MP, ses messages privés sont fermés).*`);
+            }
         } catch (err) {
             console.error(err);
             return interaction.editReply("❌ Erreur de base de données.");
@@ -163,29 +176,25 @@ client.login(process.env.DISCORD_TOKEN);
 // -------------------------------------------------------------
 app.get('/', (req, res) => { res.sendFile(path.join(__dirname, 'index.html')); });
 
-// Affiche la liste des sanctions et efface automatiquement les mutes expirés de Discord
 app.get('/api/sanctions/:type', async (req, res) => {
     let type = req.params.type.toLowerCase();
-    if (type.endsWith('s')) type = type.slice(0, -1); // Transforme 'mutes' en 'mute'
+    if (type.endsWith('s')) type = type.slice(0, -1);
     
-    const dbTable = type + 's'; // Donne 'mutes', 'bans' ou 'warns'
+    const dbTable = type + 's';
 
     try {
         const result = await pool.query(`SELECT * FROM ${dbTable} ORDER BY date_added DESC`);
         let rows = result.rows;
 
-        // Nettoyage automatique en tâche de fond pour les mutes expirés
         if (type === 'mute' && GUILD_ID) {
             const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
             if (guild) {
                 for (const row of rows) {
                     const member = await guild.members.fetch(row.user_id).catch(() => null);
-                    // Si le membre n'a plus le sablier Discord ou a quitté, on l'enlève du site
                     if (!member || !member.communicationDisabledUntilTimestamp || member.communicationDisabledUntilTimestamp < Date.now()) {
                         await pool.query('DELETE FROM mutes WHERE id = $1', [row.id]);
                     }
                 }
-                // Récupération de la liste nettoyée
                 const updatedResult = await pool.query(`SELECT * FROM mutes ORDER BY date_added DESC`);
                 rows = updatedResult.rows;
             }
@@ -207,14 +216,12 @@ app.post('/api/sanctions', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Supprime du site ET annule en direct la sanction sur Discord
 app.delete('/api/sanctions/:table/:id', async (req, res) => {
-    const { table, id } = req.params; // 'table' recevra 'mutes', 'bans' ou 'warns'
+    const { table, id } = req.params;
     
     console.log(`🗑️ Demande de suppression reçue pour la table : ${table}, ID de ligne : ${id}`);
 
     try {
-        // 1. On cherche l'ID Discord de l'utilisateur dans la table correspondante
         const data = await pool.query(`SELECT user_id FROM ${table} WHERE id = $1`, [id]);
         
         if (data.rows.length > 0) {
@@ -225,7 +232,6 @@ app.delete('/api/sanctions/:table/:id', async (req, res) => {
                 const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
 
                 if (guild) {
-                    // Si on supprime de la table 'mutes', on enlève le timeout sur Discord
                     if (table === 'mutes' || table === 'mute') {
                         try {
                             const member = await guild.members.fetch(userIdDiscord).catch(() => null);
@@ -234,23 +240,21 @@ app.delete('/api/sanctions/:table/:id', async (req, res) => {
                                 console.log(`🔊 Unmute appliqué sur Discord pour ${member.user.username}`);
                             }
                         } catch (discordErr) {
-                            console.log("⚠️ Impossible d'unmute sur Discord (permissions ou membre parti), mais on continue la suppression sur le site.");
+                            console.log("⚠️ Impossible d'unmute sur Discord, mais on continue.");
                         }
                     } 
-                    // Si on supprime de la table 'bans', on unban sur Discord
                     else if (table === 'bans' || table === 'ban') {
                         try {
                             await guild.bans.remove(userIdDiscord, "Sanction annulée depuis le site web");
                             console.log(`🔓 Unban appliqué sur Discord pour l'ID ${userIdDiscord}`);
                         } catch (discordErr) {
-                            console.log("⚠️ Impossible d'unban sur Discord (l'utilisateur n'était peut-être plus banni).");
+                            console.log("⚠️ Impossible d'unban sur Discord.");
                         }
                     }
                 }
             }
         }
 
-        // 2. On supprime la ligne de la base de données quoi qu'il arrive
         await pool.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
         console.log(`✅ Ligne ID ${id} supprimée avec succès de la table ${table}.`);
         
