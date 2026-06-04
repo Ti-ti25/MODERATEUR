@@ -7,16 +7,13 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Distribue tes pages HTML (index.html, warns.html, bans.html, ajouter.html)
 app.use(express.static(__dirname));
 
-// Connexion à ta NOUVELLE base de données Render
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// Création automatique des tables SQL
 const initDb = async () => {
     try {
         await pool.query(`
@@ -53,12 +50,11 @@ const initDb = async () => {
 };
 initDb();
 
-// Route pour afficher la page des Mutes (accueil)
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Route API pour récupérer les données de la base SQL
+// 1. LIRE LES SANCTIONS
 app.get('/api/sanctions/:type', async (req, res) => {
     const type = req.params.type;
     if (!['mutes', 'warns', 'bans'].includes(type)) return res.status(400).json({ error: "Type invalide" });
@@ -71,7 +67,7 @@ app.get('/api/sanctions/:type', async (req, res) => {
     }
 });
 
-// Route API pour ajouter une sanction depuis ajouter.html
+// 2. AJOUTER UNE SANCTION
 app.post('/api/sanctions', async (req, res) => {
     const { type, username, user_id, reason, moderator, duration } = req.body;
 
@@ -93,6 +89,37 @@ app.post('/api/sanctions', async (req, res) => {
             );
         }
         res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 3. SUPPRIMER UNE SANCTION (Nouveau !)
+app.delete('/api/sanctions/:type/:id', async (req, res) => {
+    const { type, id } = req.params;
+    if (!['mutes', 'warns', 'bans'].includes(type)) return res.status(400).json({ error: "Type invalide" });
+
+    try {
+        await pool.query(`DELETE FROM ${type} WHERE id = $1`, [id]);
+        res.json({ success: true, message: "Supprimé avec succès !" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 4. MODIFIER UNE SANCTION (Nouveau !)
+app.put('/api/sanctions/:type/:id', async (req, res) => {
+    const { type, id } = req.params;
+    const { reason, duration } = req.body;
+    if (!['mutes', 'warns', 'bans'].includes(type)) return res.status(400).json({ error: "Type invalide" });
+
+    try {
+        if (type === 'mute') {
+            await pool.query('UPDATE mutes SET reason = $1, duration = $2 WHERE id = $3', [reason, duration, id]);
+        } else {
+            await pool.query(`UPDATE ${type} SET reason = $1 WHERE id = $2`, [reason, id]);
+        }
+        res.json({ success: true, message: "Mis à jour avec succès !" });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

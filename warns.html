@@ -68,6 +68,7 @@
                         <th>Raison du Warn</th>
                         <th>Modérateur</th>
                         <th>Date</th>
+                        <th>Actions</th> </tr>
                     </tr>
                 </thead>
                 <tbody>
@@ -82,16 +83,16 @@
             </table>
         </div>
     </div>
-    <script>
+<script>
         function chargerWarns() {
             fetch('/api/sanctions/warns')
                 .then(res => res.json())
                 .then(warns => {
                     const tbody = document.querySelector('tbody');
-                    tbody.innerHTML = ''; // On vide l'exemple
+                    tbody.innerHTML = '';
 
                     if (warns.length === 0) {
-                        tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Aucun avertissement enregistré. ⚠️</td></tr>`;
+                        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Aucun avertissement enregistré. ⚠️</td></tr>`;
                         return;
                     }
 
@@ -104,11 +105,35 @@
                             <td class="reason">${warn.reason}</td>
                             <td><span class="badge-modo">${warn.moderator}</span></td>
                             <td class="date">${dateFormatee}</td>
+                            <td>
+                                <button class="btn-action" style="background:#ff9500; padding:4px 8px; font-size:0.8rem; margin-right:5px;" onclick="modifierSanction('warns', ${warn.id}, '${warn.reason.replace(/'/g, "\\'")}')">✏️</button>
+                                <button class="btn-action" style="background:#ff453a; padding:4px 8px; font-size:0.8rem;" onclick="supprimerSanction('warns', ${warn.id})">❌</button>
+                            </td>
                         `;
                         tbody.appendChild(row);
                     });
+                });
+        }
+
+        function supprimerSanction(type, id) {
+            if(confirm("Voulez-vous supprimer ce warn ?")) {
+                fetch(`/api/sanctions/${type}/${id}`, { method: 'DELETE' })
+                .then(res => res.json())
+                .then(() => chargerWarns());
+            }
+        }
+
+        function modifierSanction(type, id, ancienneRaison) {
+            const nouvelleRaison = prompt("Nouvelle raison :", ancienneRaison);
+            if(nouvelleRaison) {
+                fetch(`/api/sanctions/${type}/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: nouvelleRaison })
                 })
-                .catch(err => console.error("Erreur de chargement :", err));
+                .then(res => res.json())
+                .then(() => chargerWarns());
+            }
         }
 
         document.addEventListener('DOMContentLoaded', chargerWarns);

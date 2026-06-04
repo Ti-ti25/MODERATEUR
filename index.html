@@ -72,6 +72,7 @@
                         <th>Raison du Mute</th>
                         <th>Modérateur</th>
                         <th>Durée</th>
+                        <th>Actions</th> </tr>
                     </tr>
                 </thead>
                 <tbody>
@@ -86,21 +87,19 @@
             </table>
         </div>
     </div>
-    <script>
-        // Fonction pour charger les mutes depuis l'API de ton serveur
+<script>
         function chargerMutes() {
             fetch('/api/sanctions/mutes')
                 .then(res => res.json())
                 .then(mutes => {
                     const tbody = document.querySelector('tbody');
-                    tbody.innerHTML = ''; // On vide le faux membre d'exemple
+                    tbody.innerHTML = '';
 
                     if (mutes.length === 0) {
-                        tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Aucun utilisateur muté pour le moment. 🔇</td></tr>`;
+                        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Aucun utilisateur muté pour le moment. 🔇</td></tr>`;
                         return;
                     }
 
-                    // On affiche chaque vrai mute trouvé dans la base SQL
                     mutes.forEach(mute => {
                         const dateFormatee = new Date(mute.date_added).toLocaleDateString('fr-FR');
                         const row = document.createElement('tr');
@@ -110,14 +109,39 @@
                             <td class="reason">${mute.reason}</td>
                             <td><span class="badge-modo">${mute.moderator}</span></td>
                             <td class="date">${mute.duration} (${dateFormatee})</td>
+                            <td>
+                                <button class="btn-action" style="background:#ff9500; padding:4px 8px; font-size:0.8rem; margin-right:5px;" onclick="modifierSanction('mutes', ${mute.id}, '${mute.reason.replace(/'/g, "\\'")}', '${mute.duration}')">✏️</button>
+                                <button class="btn-action" style="background:#ff453a; padding:4px 8px; font-size:0.8rem;" onclick="supprimerSanction('mutes', ${mute.id})">❌</button>
+                            </td>
                         `;
                         tbody.appendChild(row);
                     });
-                })
-                .catch(err => console.error("Erreur de chargement :", err));
+                });
         }
 
-        // On lance le chargement dès que la page s'ouvre
+        function supprimerSanction(type, id) {
+            if(confirm("Voulez-vous vraiment annuler cette sanction ?")) {
+                fetch(`/api/sanctions/${type}/${id}`, { method: 'DELETE' })
+                .then(res => res.json())
+                .then(() => chargerMutes());
+            }
+        }
+
+        function modifierSanction(type, id, ancienneRaison, ancienneDuree) {
+            const nouvelleRaison = prompt("Nouvelle raison :", ancienneRaison);
+            const nouvelleDuree = prompt("Nouvelle durée :", ancienneDuree);
+            
+            if(nouvelleRaison && nouvelleDuree) {
+                fetch(`/api/sanctions/${type}/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason: nouvelleRaison, duration: nouvelleDuree })
+                })
+                .then(res => res.json())
+                .then(() => chargerMutes());
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', chargerMutes);
     </script>
 </body>
