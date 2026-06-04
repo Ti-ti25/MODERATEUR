@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const { Pool } = require('pg');
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ApplicationCommandOptionType, REST, Routes } = require('discord.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,58 +19,106 @@ const pool = new Pool({
 });
 
 // -------------------------------------------------------------
-// 2. LE BOT DISCORD
+// 2. LE BOT DISCORD & ENREGISTREMENT DES COMMANDES SLASH
 // -------------------------------------------------------------
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers
     ]
 });
 
-client.once('ready', () => {
+// Définition de la commande Slash /sanction
+const sanctionCommand = {
+    name: 'sanction',
+    description: 'Appliquer une sanction (Ban, Mute, Warn) et l\'ajouter au site web',
+    options: [
+        {
+            name: 'type',
+            description: 'Le type de sanction',
+            type: ApplicationCommandOptionType.String,
+            required: true,
+            choices: [
+                { name: 'Avertissement (Warn)', value: 'warn' },
+                { name: 'Rendre muet (Mute)', value: 'mute' },
+                { name: 'Bannir (Ban)', value: 'ban' }
+            ]
+        },
+        {
+            name: 'membre',
+            description: 'Le membre à sanctionner (recherche automatique)',
+            type: ApplicationCommandOptionType.User,
+            required: true
+        },
+        {
+            name: 'motif',
+            description: 'La raison de la sanction',
+            type: ApplicationCommandOptionType.String,
+            required: true
+        },
+        {
+            name: 'duree',
+            description: 'Pour les Mutes uniquement (ex: 15m, 2h, 1d). Par défaut: 24h.',
+            type: ApplicationCommandOptionType.String,
+            required: false
+        }
+    ]
+};
+
+client.once('ready', async () => {
     console.log(`🤖 Bot Discord connecté en tant que : ${client.user.tag} !`);
+
+    // Enregistrement automatique de la commande auprès de Discord
+    try {
+        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+        console.log('🔄 Enregistrement de la commande Slash /sanction en cours...');
+        
+        await rest.put(
+            Routes.applicationCommands(client.user.id),
+            { body: [sanctionCommand] }
+        );
+
+        console.log('✅ Commande Slash /sanction enregistrée avec succès partout !');
+    } catch (error) {
+        console.error('❌ Erreur lors de l\'enregistrement de la commande Slash:', error);
+    }
 });
 
-client.on('messageCreate', async (message) => {
-    // On ignore les messages des bots et ceux qui ne commencent pas par "!"
-    if (message.author.bot || !message.content.startsWith('!')) return;
+// Gestionnaire des interactions (quand quelqu'un utilise /sanction)
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
 
-    const args = message.content.slice(1).trim().split(/ +/);
-    const command = args.shift().toLowerCase();
+    if (interaction.commandName === 'sanction') {
+        const type = interaction.options.getString('type');
+        const targetMember = interaction.options.getMember('membre');
+        const reason = interaction.options.getString('motif');
+        const timeArg = interaction.options.getString('duree');
 
-    if (command === 'ban' || command === 'mute' || command === 'warn') {
-        const target = message.mentions.members.first();
-        
-        if (!target) {
-            return message.reply("❌ Tu dois mentionner un utilisateur ! Exemple : `!mute @Pseudo 30m raison`");
+        if (!targetMember) {
+            return interaction.reply({ content: "❌ Impossible de trouver ce membre sur le serveur.", ephemeral: true });
         }
 
-        const moderator = message.author.tag;
-        const username = target.user.username;
-        const user_id = target.id;
+        const moderator = interaction.user.tag;
+        const username = targetMember.user.username;
+        const user_id = targetMember.id;
+
+        // On répond tout de suite à Discord pour lui dire qu'on traite la demande
+        await interaction.deferReply();
 
         try {
-            // --- COMMANDE BAN ---
-            if (command === 'ban') {
-                const reason = args.slice(1).join(' ') || "Aucune raison spécifiée";
-                
-                await target.ban({ reason: reason });
-                
+            // --- ACTION : BAN ---
+            if (type === 'ban') {
+                await targetMember.ban({ reason: reason });
                 await pool.query(
                     'INSERT INTO bans (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)',
                     [username, user_id, reason, moderator]
                 );
-                
-                message.channel.send(`🔨 **${username}** a été banni de Discord et ajouté au site web !`);
-                await message.delete(); // Supprime ton message !ban automatiquement
-            } 
-            
-            // --- COMMANDE MUTE ---
-            else if (command === 'mute') {
-                const timeArg = args[1]; 
+                return interaction.editReply(`🔨 **${username}** a été banni de Discord et ajouté au site web !`);
+            }
+
+            // --- ACTION : MUTE ---
+            if (type === 'mute') {
                 let ms = 0;
                 let durationText = "24 Heures";
 
@@ -91,39 +139,31 @@ client.on('messageCreate', async (message) => {
                 }
 
                 if (ms === 0) {
-                    ms = 24 * 60 * 60 * 1000; 
+                    ms = 24 * 60 * 60 * 1000;
                     durationText = "24 Heures";
                 }
 
-                const reason = args.slice(2).join(' ') || "Aucune raison spécifiée";
-
-                await target.timeout(ms, reason);
+                await targetMember.timeout(ms, reason);
 
                 await pool.query(
                     'INSERT INTO mutes (username, user_id, reason, moderator, duration) VALUES ($1, $2, $3, $4, $5)',
                     [username, user_id, reason, moderator, durationText]
                 );
-                
-                message.channel.send(`🔇 **${username}** a été muté pendant **${durationText}** sur Discord et ajouté au site !`);
-                await message.delete(); // Supprime ton message !mute automatiquement
-            } 
-            
-            // --- COMMANDE WARN ---
-            else if (command === 'warn') {
-                const reason = args.slice(1).join(' ') || "Aucune raison spécifiée";
-                
+                return interaction.editReply(`🔇 **${username}** a été muté pendant **${durationText}** sur Discord et ajouté au site !`);
+            }
+
+            // --- ACTION : WARN ---
+            if (type === 'warn') {
                 await pool.query(
                     'INSERT INTO warns (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)',
                     [username, user_id, reason, moderator]
                 );
-                
-                message.channel.send(`⚠️ **${username}** a reçu un avertissement et cela apparaît sur le site web !`);
-                await message.delete(); // Supprime ton message !warn automatiquement
+                return interaction.editReply(`⚠️ **${username}** a reçu un avertissement et cela apparaît sur le site web !`);
             }
 
         } catch (err) {
             console.error(err);
-            message.reply("❌ Impossible d'exécuter la commande. Vérifie mes permissions (rôle Administrateur).");
+            return interaction.editReply("❌ Impossible d'exécuter la commande. Vérifie que mon rôle est bien **tout en haut** de la liste des rôles et que j'ai la permission Administrateur.");
         }
     }
 });
@@ -137,7 +177,6 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Récupérer la liste des sanctions
 app.get('/api/sanctions/:type', async (req, res) => {
     const type = req.params.type;
     try {
@@ -148,7 +187,6 @@ app.get('/api/sanctions/:type', async (req, res) => {
     }
 });
 
-// Ajouter une sanction via le formulaire du site
 app.post('/api/sanctions', async (req, res) => {
     const { type, username, user_id, reason, moderator, duration } = req.body;
     try {
@@ -165,7 +203,6 @@ app.post('/api/sanctions', async (req, res) => {
     }
 });
 
-// Supprimer (Unban / Unmute / Retirer un warn) via le site web
 app.delete('/api/sanctions/:type/:id', async (req, res) => {
     const { type, id } = req.params;
     try {
