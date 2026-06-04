@@ -110,33 +110,18 @@
                             <td><span class="badge-modo">${mute.moderator}</span></td>
                             <td class="date">${mute.duration} (${dateFormatee})</td>
                             <td>
-                                <button class="btn-action" style="background:#ff9500; padding:4px 8px; font-size:0.8rem; margin-right:5px;" onclick="modifierSanction('mutes', ${mute.id}, '${mute.reason.replace(/'/g, "\\'")}', '${mute.duration}')">✏️</button>
-                                <button class="btn-action" style="background:#ff453a; padding:4px 8px; font-size:0.8rem;" onclick="supprimerSanction('mutes', ${mute.id})">❌</button>
+                                <button class="btn-action" style="background:#ff453a; padding:6px 12px; font-size:0.85rem; font-weight:bold; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="supprimerSanction('mutes', ${mute.id}, '${mute.username}')">❌ Unmute</button>
                             </td>
                         `;
                         tbody.appendChild(row);
                     });
-                });
-        }
-
-        function supprimerSanction(type, id) {
-            if(confirm("Voulez-vous vraiment annuler cette sanction ?")) {
-                fetch(`/api/sanctions/${type}/${id}`, { method: 'DELETE' })
-                .then(res => res.json())
-                .then(() => chargerMutes());
-            }
-        }
-
-        function modifierSanction(type, id, ancienneRaison, ancienneDuree) {
-            const nouvelleRaison = prompt("Nouvelle raison :", ancienneRaison);
-            const nouvelleDuree = prompt("Nouvelle durée :", ancienneDuree);
-            
-            if(nouvelleRaison && nouvelleDuree) {
-                fetch(`/api/sanctions/${type}/${id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ reason: nouvelleRaison, duration: nouvelleDuree })
                 })
+                .catch(err => console.error("Erreur de chargement :", err));
+        }
+
+        function supprimerSanction(type, id, username) {
+            if(confirm(`Voulez-vous vraiment annuler le mute de ${username} ?`)) {
+                fetch(`/api/sanctions/${type}/${id}`, { method: 'DELETE' })
                 .then(res => res.json())
                 .then(() => chargerMutes());
             }
