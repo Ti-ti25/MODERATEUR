@@ -88,46 +88,56 @@
         </div>
     </div>
 <script>
-        function chargerMutes() {
-            fetch('/api/sanctions/mutes')
-                .then(res => res.json())
-                .then(mutes => {
-                    const tbody = document.querySelector('tbody');
-                    tbody.innerHTML = '';
+    function chargerMutes() {
+        fetch('/api/sanctions/mutes')
+            .then(res => res.json())
+            .then(mutes => {
+                const tbody = document.querySelector('tbody');
+                tbody.innerHTML = '';
 
-                    if (mutes.length === 0) {
-                        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Aucun utilisateur muté pour le moment. 🔇</td></tr>`;
-                        return;
-                    }
+                if (mutes.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Aucun utilisateur muté pour le moment. 🔇</td></tr>`;
+                    return;
+                }
 
-                    mutes.forEach(mute => {
-                        const dateFormatee = new Date(mute.date_added).toLocaleDateString('fr-FR');
-                        const row = document.createElement('tr');
-                        row.innerHTML = `
-                            <td><strong>${mute.username}</strong></td>
-                            <td><span class="user-id">${mute.user_id}</span></td>
-                            <td class="reason">${mute.reason}</td>
-                            <td><span class="badge-modo">${mute.moderator}</span></td>
-                            <td class="date">${mute.duration} (${dateFormatee})</td>
-                            <td>
-                                <button class="btn-action" style="background:#ff453a; padding:6px 12px; font-size:0.85rem; font-weight:bold; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="supprimerSanction('mutes', ${mute.id}, '${mute.username}')">Retirer ❌</button>
-                            </td>
-                        `;
-                        tbody.appendChild(row);
-                    });
-                })
-                .catch(err => console.error("Erreur de chargement :", err));
+                mutes.forEach(mute => {
+                    const dateFormatee = new Date(mute.date_added).toLocaleDateString('fr-FR');
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td><strong>${mute.username}</strong></td>
+                        <td><span class="user-id">${mute.user_id}</span></td>
+                        <td class="reason">${mute.reason}</td>
+                        <td><span class="badge-modo">${mute.moderator}</span></td>
+                        <td class="date">${mute.duration} (${dateFormatee})</td>
+                        <td>
+                            <button class="btn-action" style="background:#ff453a; padding:6px 12px; font-size:0.85rem; font-weight:bold; color:white; border:none; border-radius:4px; cursor:pointer;" onclick="supprimerSanction('mute', ${mute.id}, '${mute.username}')">Retirer ❌</button>
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            })
+            .catch(err => console.error("Erreur de chargement :", err));
+    }
+
+    function supprimerSanction(type, id, username) {
+        if(confirm(`Voulez-vous vraiment annuler la sanction de ${username} et la retirer de Discord ?`)) {
+            fetch(`/api/sanctions/${type}/${id}`, { method: 'DELETE' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    chargerMutes();
+                } else {
+                    alert("❌ Erreur : " + data.error);
+                }
+            })
+            .catch(err => {
+                console.error(err);
+                alert("❌ Erreur de connexion avec le serveur.");
+            });
         }
+    }
 
-        function supprimerSanction(type, id, username) {
-            if(confirm(`Voulez-vous vraiment annuler le mute de ${username} ?`)) {
-                fetch(`/api/sanctions/${type}/${id}`, { method: 'DELETE' })
-                .then(res => res.json())
-                .then(() => chargerMutes());
-            }
-        }
-
-        document.addEventListener('DOMContentLoaded', chargerMutes);
-    </script>
+    document.addEventListener('DOMContentLoaded', chargerMutes);
+</script>
 </body>
 </html>
