@@ -35,6 +35,7 @@ client.once('ready', () => {
 });
 
 client.on('messageCreate', async (message) => {
+    // On ignore les messages des bots et ceux qui ne commencent pas par "!"
     if (message.author.bot || !message.content.startsWith('!')) return;
 
     const args = message.content.slice(1).trim().split(/ +/);
@@ -52,21 +53,26 @@ client.on('messageCreate', async (message) => {
         const user_id = target.id;
 
         try {
+            // --- COMMANDE BAN ---
             if (command === 'ban') {
                 const reason = args.slice(1).join(' ') || "Aucune raison spécifiée";
+                
                 await target.ban({ reason: reason });
+                
                 await pool.query(
                     'INSERT INTO bans (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)',
                     [username, user_id, reason, moderator]
                 );
+                
                 message.channel.send(`🔨 **${username}** a été banni de Discord et ajouté au site web !`);
+                await message.delete(); // Supprime ton message !ban automatiquement
             } 
             
+            // --- COMMANDE MUTE ---
             else if (command === 'mute') {
-                // On récupère l'argument du temps (ex: 10m, 2h, 1d)
                 const timeArg = args[1]; 
                 let ms = 0;
-                let durationText = "24 Heures"; // Temps par défaut si non spécifié
+                let durationText = "24 Heures";
 
                 if (timeArg) {
                     const timeValue = parseInt(timeArg);
@@ -84,33 +90,35 @@ client.on('messageCreate', async (message) => {
                     }
                 }
 
-                // Si le format du temps n'était pas valide ou absent, on met 24h par défaut
                 if (ms === 0) {
                     ms = 24 * 60 * 60 * 1000; 
                     durationText = "24 Heures";
                 }
 
-                // On récupère la raison (tout ce qui est écrit après le temps)
                 const reason = args.slice(2).join(' ') || "Aucune raison spécifiée";
 
-                // 1. Appliquer le VRAI mute (Timeout) sur Discord
                 await target.timeout(ms, reason);
 
-                // 2. Sauvegarde dans Render SQL
                 await pool.query(
                     'INSERT INTO mutes (username, user_id, reason, moderator, duration) VALUES ($1, $2, $3, $4, $5)',
                     [username, user_id, reason, moderator, durationText]
                 );
+                
                 message.channel.send(`🔇 **${username}** a été muté pendant **${durationText}** sur Discord et ajouté au site !`);
+                await message.delete(); // Supprime ton message !mute automatiquement
             } 
             
+            // --- COMMANDE WARN ---
             else if (command === 'warn') {
                 const reason = args.slice(1).join(' ') || "Aucune raison spécifiée";
+                
                 await pool.query(
                     'INSERT INTO warns (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)',
                     [username, user_id, reason, moderator]
                 );
+                
                 message.channel.send(`⚠️ **${username}** a reçu un avertissement et cela apparaît sur le site web !`);
+                await message.delete(); // Supprime ton message !warn automatiquement
             }
 
         } catch (err) {
@@ -123,12 +131,13 @@ client.on('messageCreate', async (message) => {
 client.login(process.env.DISCORD_TOKEN);
 
 // -------------------------------------------------------------
-// 3. SITE WEB API 
+// 3. SITE WEB API (ROUTES POUR LES PAGES HTML)
 // -------------------------------------------------------------
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// Récupérer la liste des sanctions
 app.get('/api/sanctions/:type', async (req, res) => {
     const type = req.params.type;
     try {
@@ -139,6 +148,7 @@ app.get('/api/sanctions/:type', async (req, res) => {
     }
 });
 
+// Ajouter une sanction via le formulaire du site
 app.post('/api/sanctions', async (req, res) => {
     const { type, username, user_id, reason, moderator, duration } = req.body;
     try {
@@ -155,6 +165,7 @@ app.post('/api/sanctions', async (req, res) => {
     }
 });
 
+// Supprimer (Unban / Unmute / Retirer un warn) via le site web
 app.delete('/api/sanctions/:type/:id', async (req, res) => {
     const { type, id } = req.params;
     try {
