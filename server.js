@@ -62,31 +62,25 @@ client.once('ready', () => {
 // MIDDLEWARE DE VÉRIFICATION
 // -------------------------------------------------------------
 async function requireAuth(req, res, next) {
-    // 1. Est-ce que l'utilisateur est connecté au site ?
     if (!req.session || !req.session.user) {
         return res.redirect('/login.html');
     }
 
     try {
-        // 2. On va chercher en direct le serveur Discord
         const guild = client.guilds.cache.get(GUILD_ID);
-        if (!guild) {
-            return res.status(500).send("Erreur de configuration Discord (Guild introuvable).");
-        }
+        if (!guild) return res.status(500).send("Erreur de configuration Discord.");
 
-        // 3. On va chercher le membre en direct sur Discord (pas de cache)
         const member = await guild.members.fetch({ user: req.session.user.id, force: true });
         
-        // 4. On vérifie s'il a toujours le rôle
         if (member && member.roles.cache.has(MODERATOR_ROLE_ID)) {
-            return next(); // Il a le rôle, on le laisse passer !
+            return next();
         } else {
-            // Il n'a plus le rôle ! On détruit sa session et on le jette
             req.session.destroy();
+            // On le redirige vers le login avec l'erreur "norole" dans l'URL
             return res.redirect('/login.html?error=norole');
         }
     } catch (error) {
-        console.error("Erreur vérification rôle en direct :", error);
+        console.error(error);
         req.session.destroy();
         return res.redirect('/login.html');
     }
