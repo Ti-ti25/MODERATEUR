@@ -24,8 +24,9 @@ app.use(session({
     }
 }));
  
-// Les fichiers statiques sont servis APRÈS le middleware de session
-app.use(express.static(__dirname));
+// MODIFICATION : On ne sert en accès libre que le dossier public (qui contient login.html)
+// On ne met PAS "app.use(express.static(__dirname))" sinon tout le site est en accès libre !
+app.use(express.static(path.join(__dirname, 'public')));
  
 // -------------------------------------------------------------
 // VARIABLES D'ENVIRONNEMENT
@@ -33,358 +34,189 @@ app.use(express.static(__dirname));
 const GUILD_ID = process.env.GUILD_ID;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
-const REDIRECT_URI = process.env.REDIRECT_URI; // ex: https://ton-app.onrender.com/auth/callback
+const REDIRECT_URI = process.env.REDIRECT_URI;
+const BOT_TOKEN = process.env.DISCORD_TOKEN;
  
-// Rôle(s) autorisés à accéder au site (insensible à la casse)
-const ALLOWED_ROLES = ['* Modérateur [Discord]'];
- 
-// -------------------------------------------------------------
-// 1. BASE DE DONNÉES POSTGRESQL
-// -------------------------------------------------------------
+// Database Postgres
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
  
 // -------------------------------------------------------------
-// 2. BOT DISCORD
+// BOT DISCORD (pour appliquer les sanctions en direct)
 // -------------------------------------------------------------
-const discordClient = new Client({
+const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildModeration,
         GatewayIntentBits.GuildMembers
     ]
 });
  
-const commands = [
-    {
-        name: 'warn',
-        description: 'Mettre un avertissement à un membre, l\'avertir en MP et l\'ajouter au site',
-        options: [
-            { name: 'membre', description: 'Le membre à avertir', type: ApplicationCommandOptionType.User, required: true },
-            { name: 'motif', description: 'La raison de l\'avertissement', type: ApplicationCommandOptionType.String, required: true }
-        ]
-    },
-    {
-        name: 'mute',
-        description: 'Rendre muet (Timeout) un membre sur Discord et l\'ajouter au site',
-        options: [
-            { name: 'membre', description: 'Le membre à rendre muet', type: ApplicationCommandOptionType.User, required: true },
-            { name: 'duree', description: 'La durée du mute (ex: 15m, 2h, 2h15m, 1d12h)', type: ApplicationCommandOptionType.String, required: true },
-            { name: 'motif', description: 'La raison du mute', type: ApplicationCommandOptionType.String, required: true }
-        ]
-    },
-    {
-        name: 'ban',
-        description: 'Bannir définitivement un membre de Discord et l\'ajouter au site',
-        options: [
-            { name: 'membre', description: 'Le membre à bannir', type: ApplicationCommandOptionType.User, required: true },
-            { name: 'motif', description: 'La raison du bannissement', type: ApplicationCommandOptionType.String, required: true }
-        ]
-    }
-];
+client.login(BOT_TOKEN).catch(err => console.error("❌ Échec login Bot Discord :", err));
  
-discordClient.once('ready', async () => {
-    console.log(`🤖 Bot Discord connecté en tant que : ${discordClient.user.tag} !`);
-    try {
-        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        await rest.put(Routes.applicationCommands(discordClient.user.id), { body: [] });
-        await rest.put(Routes.applicationCommands(discordClient.user.id), { body: commands });
-        console.log('✅ Commandes Slash synchronisées !');
-    } catch (error) {
-        console.error('❌ Erreur lors de l\'enregistrement des commandes:', error);
-    }
+client.once('ready', () => {
+    console.log(`🤖 Bot Discord connecté en tant que ${client.user.tag}`);
 });
  
-discordClient.on('interactionCreate', async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
- 
-    const { commandName } = interaction;
-    const targetMember = interaction.options.getMember('membre');
-    const reason = interaction.options.getString('motif');
- 
-    if (!targetMember) {
-        return interaction.reply({ content: "❌ Impossible de trouver ce membre sur le serveur.", ephemeral: true });
-    }
- 
-    const moderator = interaction.user.tag;
-    const username = targetMember.user.username;
-    const user_id = targetMember.id;
- 
-    // --- /WARN ---
-    if (commandName === 'warn') {
-        await interaction.deferReply();
-        let mpEnvoye = true;
-        try {
-            await targetMember.send(`⚠️ **Avertissement reçu**\n\nTu as reçu un avertissement sur le serveur.\n**Raison :** ${reason}\n**Modérateur :** ${moderator}\n\n*Cet avertissement a été consigné dans ton casier judiciaire sur notre site web.*`);
-        } catch {
-            console.log(`⚠️ Impossible d'envoyer un MP à ${username}.`);
-            mpEnvoye = false;
-        }
-        try {
-            await pool.query('INSERT INTO warns (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)', [username, user_id, reason, moderator]);
-            if (mpEnvoye) {
-                return interaction.editReply(`⚠️ **${username}** a reçu un avertissement, a été notifié en MP, et cela apparaît sur le site web !`);
-            } else {
-                return interaction.editReply(`⚠️ **${username}** a reçu un avertissement et apparaît sur le site web ! *(Note : MP fermés).*`);
-            }
-        } catch (err) {
-            console.error(err);
-            return interaction.editReply("❌ Erreur de base de données.");
-        }
-    }
- 
-    // --- /MUTE ---
-    if (commandName === 'mute') {
-        const timeArg = interaction.options.getString('duree').toLowerCase().trim();
-        await interaction.deferReply();
-        try {
-            let totalMs = 0;
-            const daysMatch = timeArg.match(/(\d+)d/);
-            const hoursMatch = timeArg.match(/(\d+)h/);
-            const minsMatch = timeArg.match(/(\d+)m/);
- 
-            if (daysMatch) totalMs += parseInt(daysMatch[1]) * 24 * 60 * 60 * 1000;
-            if (hoursMatch) totalMs += parseInt(hoursMatch[1]) * 60 * 60 * 1000;
-            if (minsMatch) totalMs += parseInt(minsMatch[1]) * 60 * 1000;
- 
-            if (totalMs === 0) return interaction.editReply("❌ Format invalide ! Exemple : `15m`, `2h`, `2h15m`, `1d12h`.");
- 
-            let durationParts = [];
-            if (daysMatch) durationParts.push(`${daysMatch[1]} Jour(s)`);
-            if (hoursMatch) durationParts.push(`${hoursMatch[1]} Heure(s)`);
-            if (minsMatch) durationParts.push(`${minsMatch[1]} Minute(s)`);
-            const durationText = durationParts.join(' et ');
- 
-            await targetMember.timeout(totalMs, reason);
-            await pool.query('INSERT INTO mutes (username, user_id, reason, moderator, duration) VALUES ($1, $2, $3, $4, $5)', [username, user_id, reason, moderator, durationText]);
-            return interaction.editReply(`🔇 **${username}** a été muté pendant **${durationText}** sur Discord et ajouté au site !`);
-        } catch (err) {
-            console.error(err);
-            return interaction.editReply("❌ Erreur lors du mute. Vérifie ma hiérarchie.");
-        }
-    }
- 
-    // --- /BAN ---
-    if (commandName === 'ban') {
-        await interaction.deferReply();
-        try {
-            await targetMember.ban({ reason });
-            await pool.query('INSERT INTO bans (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)', [username, user_id, reason, moderator]);
-            return interaction.editReply(`🔨 **${username}** a été banni de Discord et ajouté au site web !`);
-        } catch (err) {
-            console.error(err);
-            return interaction.editReply("❌ Impossible de bannir ce membre.");
-        }
-    }
-});
- 
-discordClient.login(process.env.DISCORD_TOKEN);
- 
 // -------------------------------------------------------------
-// 3. OAUTH2 DISCORD — ROUTES D'AUTHENTIFICATION
+// MIDDLEWARE DE SÉCURITÉ
 // -------------------------------------------------------------
- 
-// Middleware de protection : vérifie que l'utilisateur est connecté et autorisé
 function requireAuth(req, res, next) {
-    if (!req.session.user) {
-        // Si c'est une requête API, renvoyer 401
-        if (req.path.startsWith('/api/')) {
-            return res.status(401).json({ error: 'Non authentifié.' });
-        }
-        // Sinon rediriger vers la page de login
-        return res.redirect('/login.html');
+    if (req.session && req.session.user) {
+        return next();
     }
-    next();
+    // Si pas connecté, on redirige vers la page de login
+    res.redirect('/login.html');
 }
  
-// Route : démarrer la connexion OAuth2
-app.get('/auth/login', (req, res) => {
-    const params = new URLSearchParams({
-        client_id: CLIENT_ID,
-        redirect_uri: REDIRECT_URI,
-        response_type: 'code',
-        scope: 'identify guilds.members.read'
-    });
-    res.redirect(`https://discord.com/api/oauth2/authorize?${params}`);
+// -------------------------------------------------------------
+// 3. OAUTH2 DISCORD (CONNEXION)
+// -------------------------------------------------------------
+app.get('/auth/discord', (req, res) => {
+    const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify`;
+    res.redirect(discordAuthUrl);
 });
  
-// Route : callback OAuth2 après connexion Discord
-app.get('/auth/callback', async (req, res) => {
-    const { code } = req.query;
-    if (!code) return res.redirect('/login.html?error=no_code');
+app.get('/auth/discord/callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) return res.send("Code de connexion manquant.");
  
     try {
-        // 1. Échanger le code contre un token
-        const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
+        const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({
                 client_id: CLIENT_ID,
                 client_secret: CLIENT_SECRET,
                 grant_type: 'authorization_code',
-                code,
-                redirect_uri: REDIRECT_URI
-            })
+                code: code,
+                redirect_uri: REDIRECT_URI,
+            }),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
-        const tokenData = await tokenRes.json();
-        if (!tokenData.access_token) return res.redirect('/login.html?error=token_failed');
  
-        // 2. Récupérer les infos de l'utilisateur
-        const userRes = await fetch('https://discord.com/api/users/@me', {
+        const tokenData = await tokenResponse.json();
+        if (tokenData.error) {
+            console.error("Token error:", tokenData);
+            return res.send("Erreur lors de la récupération du token Discord.");
+        }
+ 
+        const userResponse = await fetch('https://discord.com/api/users/@me', {
             headers: { Authorization: `Bearer ${tokenData.access_token}` }
         });
-        const userData = await userRes.json();
+        const userData = await userResponse.json();
  
-        // 3. Vérifier que l'utilisateur est membre du serveur ET a le bon rôle
-        const memberRes = await fetch(`https://discord.com/api/users/@me/guilds/${GUILD_ID}/member`, {
-            headers: { Authorization: `Bearer ${tokenData.access_token}` }
-        });
- 
-        if (!memberRes.ok) {
-            console.log(`❌ ${userData.username} n'est pas membre du serveur.`);
-            return res.redirect('/login.html?error=not_member');
-        }
- 
-        const memberData = await memberRes.json();
- 
-        // 4. Récupérer les noms des rôles via le bot (qui a accès au serveur)
-        let hasAccess = false;
-        try {
-            const guild = await discordClient.guilds.fetch(GUILD_ID);
-            const member = await guild.members.fetch(userData.id);
- 
-            hasAccess = member.roles.cache.some(role =>
-                ALLOWED_ROLES.some(allowed => role.name.toLowerCase() === allowed.toLowerCase())
-            );
-        } catch (roleErr) {
-            console.error('Erreur vérification des rôles via le bot :', roleErr);
-            // Fallback : vérifier via les role IDs retournés par OAuth (sans les noms)
-            // Dans ce cas on refuse par sécurité
-            hasAccess = false;
-        }
- 
-        if (!hasAccess) {
-            console.log(`⛔ ${userData.username} n'a pas le rôle requis.`);
-            return res.redirect('/login.html?error=no_permission');
-        }
- 
-        // 5. Stocker les infos en session
+        // Sauvegarde de l'utilisateur dans la session
         req.session.user = {
             id: userData.id,
             username: userData.username,
-            discriminator: userData.discriminator,
             avatar: userData.avatar
-                ? `https://cdn.discordapp.com/avatars/${userData.id}/${userData.avatar}.png`
-                : `https://cdn.discordapp.com/embed/avatars/${parseInt(userData.discriminator) % 5}.png`
         };
  
-        console.log(`✅ ${userData.username} connecté avec succès.`);
-        return res.redirect('/');
- 
+        console.log(`🔑 ${userData.username} s'est connecté au panel.`);
+        res.redirect('/');
     } catch (err) {
-        console.error('Erreur OAuth2 :', err);
-        return res.redirect('/login.html?error=server_error');
+        console.error(err);
+        res.send("Erreur serveur pendant l'authentification.");
     }
 });
  
-// Route : déconnexion
 app.get('/auth/logout', (req, res) => {
-    req.session.destroy(() => {
-        res.redirect('/login.html');
-    });
-});
- 
-// Route : infos de l'utilisateur connecté (utilisé par le front)
-app.get('/api/me', requireAuth, (req, res) => {
-    res.json(req.session.user);
+    req.session.destroy();
+    res.redirect('/login.html');
 });
  
 // -------------------------------------------------------------
-// 4. SITE WEB — ROUTES PROTÉGÉES
+// 4. SITE WEB — ROUTES PROTEGEES (Vérifiées par requireAuth)
 // -------------------------------------------------------------
  
-// Page principale protégée
 app.get('/', requireAuth, (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
  
-// Page de login (accessible sans auth)
+app.get('/index.html', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+ 
+app.get('/warns.html', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'warns.html'));
+});
+ 
+app.get('/bans.html', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'bans.html'));
+});
+ 
+// Route d'accès à la page de login (publique)
 app.get('/login.html', (req, res) => {
-    res.sendFile(path.join(__dirname, 'login.html'));
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
  
-// API sanctions — protégées
-app.get('/api/sanctions/:type', requireAuth, async (req, res) => {
-    let type = req.params.type.toLowerCase();
-    if (type.endsWith('s')) type = type.slice(0, -1);
-    const dbTable = type + 's';
+// -------------------------------------------------------------
+// API — GESTION DES SANCTIONS (PROTEGEE)
+// -------------------------------------------------------------
  
+// Récupérer les mutes
+app.get('/api/sanctions/mutes', requireAuth, async (req, res) => {
     try {
-        const result = await pool.query(`SELECT * FROM ${dbTable} ORDER BY date_added DESC`);
-        let rows = result.rows;
- 
-        if (type === 'mute' && GUILD_ID) {
-            const guild = await discordClient.guilds.fetch(GUILD_ID).catch(() => null);
-            if (guild) {
-                for (const row of rows) {
-                    const member = await guild.members.fetch(row.user_id).catch(() => null);
-                    if (!member || !member.communicationDisabledUntilTimestamp || member.communicationDisabledUntilTimestamp < Date.now()) {
-                        await pool.query('DELETE FROM mutes WHERE id = $1', [row.id]);
-                    }
-                }
-                const updatedResult = await pool.query('SELECT * FROM mutes ORDER BY date_added DESC');
-                rows = updatedResult.rows;
-            }
-        }
-        res.json(rows);
+        const result = await pool.query('SELECT * FROM mutes ORDER BY id DESC');
+        res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
  
-app.post('/api/sanctions', requireAuth, async (req, res) => {
-    let { type, username, user_id, reason, moderator, duration } = req.body;
-    type = type.toLowerCase();
-    if (type.endsWith('s')) type = type.slice(0, -1);
- 
+// Récupérer les warns
+app.get('/api/sanctions/warns', requireAuth, async (req, res) => {
     try {
-        if (type === 'mute') await pool.query('INSERT INTO mutes (username, user_id, reason, moderator, duration) VALUES ($1, $2, $3, $4, $5)', [username, user_id, reason, moderator, duration || 'Non spécifiée']);
-        else if (type === 'warn') await pool.query('INSERT INTO warns (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)', [username, user_id, reason, moderator]);
-        else if (type === 'ban') await pool.query('INSERT INTO bans (username, user_id, reason, moderator) VALUES ($1, $2, $3, $4)', [username, user_id, reason, moderator]);
-        res.json({ success: true });
+        const result = await pool.query('SELECT * FROM warns ORDER BY id DESC');
+        res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
  
+// Récupérer les bans
+app.get('/api/sanctions/bans', requireAuth, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM bans ORDER BY id DESC');
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+ 
+// Supprimer une sanction (et agir sur Discord si nécessaire)
 app.delete('/api/sanctions/:table/:id', requireAuth, async (req, res) => {
     const { table, id } = req.params;
-    console.log(`🗑️ Suppression demandée : table ${table}, ID ${id}`);
+    const validTables = ['mutes', 'warns', 'bans'];
+ 
+    if (!validTables.includes(table)) {
+        return res.status(400).json({ error: "Table invalide" });
+    }
  
     try {
-        const data = await pool.query(`SELECT user_id FROM ${table} WHERE id = $1`, [id]);
-        if (data.rows.length > 0) {
-            const userIdDiscord = data.rows[0].user_id;
+        // 1. On récupère d'abord l'ID Discord de l'utilisateur de la sanction avant de supprimer la ligne
+        const dataQuery = await pool.query(`SELECT user_id FROM ${table} WHERE id = $1`, [id]);
+        
+        if (dataQuery.rows.length > 0) {
+            const userIdDiscord = dataQuery.rows[0].user_id;
+            const guild = client.guilds.cache.get(GUILD_ID);
  
-            if (GUILD_ID) {
-                const guild = await discordClient.guilds.fetch(GUILD_ID).catch(() => null);
-                if (guild) {
-                    if (table === 'mutes' || table === 'mute') {
-                        try {
-                            const member = await guild.members.fetch(userIdDiscord).catch(() => null);
-                            if (member && member.communicationDisabledUntilTimestamp) {
-                                await member.timeout(null, "Sanction annulée depuis le site web");
-                                console.log(`🔊 Unmute appliqué pour ${member.user.username}`);
-                            }
-                        } catch { console.log("⚠️ Impossible d'unmute sur Discord."); }
-                    } else if (table === 'bans' || table === 'ban') {
-                        try {
-                            await guild.bans.remove(userIdDiscord, "Sanction annulée depuis le site web");
-                            console.log(`🔓 Unban appliqué pour l'ID ${userIdDiscord}`);
-                        } catch { console.log("⚠️ Impossible d'unban sur Discord."); }
-                    }
+            if (guild) {
+                if (table === 'mutes') {
+                    try {
+                        const member = await guild.members.fetch(userIdDiscord).catch(() => null);
+                        if (member && member.communicationDisabledUntilTimestamp) {
+                            await member.timeout(null, "Sanction annulée depuis le site web");
+                            console.log(`🔊 Unmute appliqué pour ${member.user.username}`);
+                        }
+                    } catch { console.log("⚠️ Impossible d'unmute sur Discord."); }
+                } else if (table === 'bans') {
+                    try {
+                        await guild.bans.remove(userIdDiscord, "Sanction annulée depuis le site web");
+                        console.log(`🔓 Unban appliqué pour l'ID ${userIdDiscord}`);
+                    } catch { console.log("⚠️ Impossible d'unban sur Discord."); }
                 }
             }
         }
@@ -404,4 +236,3 @@ app.delete('/api/sanctions/:table/:id', requireAuth, async (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 Serveur en ligne sur le port ${PORT}`);
 });
- 
